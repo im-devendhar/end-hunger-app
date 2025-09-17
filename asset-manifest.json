@@ -1,0 +1,19 @@
+{
+  "files": {
+    "main.css": "/end-hunger-app/static/css/main.8afbb22a.css",
+    "main.js": "/end-hunger-app/static/js/main.176fb213.js",
+    "static/js/453.9b4df965.chunk.js": "/end-hunger-app/static/js/453.9b4df965.chunk.js",
+    "static/media/DonorPage.jpg": "/end-hunger-app/static/media/DonorPage.86191aeced956177fe51.jpg",
+    "static/media/recepinetImage.png": "/end-hunger-app/static/media/recepinetImage.afd42706fd58b5e4c2c6.png",
+    "static/media/EndHunger.jpg": "/end-hunger-app/static/media/EndHunger.9214d5267d64ad1e63f0.jpg",
+    "static/media/CrowdFund.jpg": "/end-hunger-app/static/media/CrowdFund.b61d71e3bdb5004534f9.jpg",
+    "index.html": "/end-hunger-app/index.html",
+    "main.8afbb22a.css.map": "/end-hunger-app/static/css/main.8afbb22a.css.map",
+    "main.176fb213.js.map": "/end-hunger-app/static/js/main.176fb213.js.map",
+    "453.9b4df965.chunk.js.map": "/end-hunger-app/static/js/453.9b4df965.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.8afbb22a.css",
+    "static/js/main.176fb213.js"
+  ]
+}
