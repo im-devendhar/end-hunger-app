@@ -7,8 +7,8 @@ on:
 
 jobs:
   build-and-deploy:
-    # Make sure these labels match your self-hosted runner
-    runs-on: 
+   
+    runs-on: self-hosted
 
     steps:
       - name: Checkout repository
@@ -56,4 +56,4 @@ jobs:
           sudo systemctl restart nginx
 
       - name: Done
-        run: echo "Applocation deployed successfully"
+        run: echo "Application deployed successfully"
