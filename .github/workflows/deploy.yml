@@ -1,0 +1,54 @@
+name: CD - Deploy React App to EC2
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build React App
+        run: npm run build
+
+      - name: Add SSH Key
+        uses: webfactory/ssh-agent@v0.8.1
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
+
+      - name: Deploy using rsync
+        env:
+          HOST: ${{ secrets.EC2_HOST }}
+          USER: ${{ secrets.EC2_USER }}
+          PORT: ${{ secrets.EC2_SSH_PORT }}
+          TARGET: ${{ secrets.EC2_TARGET_DIR }}
+        run: |
+          PORT=${PORT:-22}
+          echo "Copying build folder to EC2..."
+
+          # Copy build folder to EC2 user home
+          rsync -avz -e "ssh -o StrictHostKeyChecking=no -p ${PORT}" \
+            build/ ${USER}@${HOST}:/home/${USER}/react-deploy/
+
+          # Move build to webroot
+          ssh -o StrictHostKeyChecking=no -p ${PORT} ${USER}@${HOST} <<EOF
+            sudo rm -rf ${TARGET}/*
+            sudo mkdir -p ${TARGET}
+            sudo cp -r /home/${USER}/react-deploy/* ${TARGET}/
+            sudo systemctl restart nginx || true
+            sudo systemctl restart apache2 || true
+            echo "Deployment successful"
+EOF
