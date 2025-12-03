@@ -1,4 +1,4 @@
-name: CD - Deploy React App to EC2
+name: Self-hosted Deploy - React App
 
 on:
   push:
@@ -6,49 +6,36 @@ on:
   workflow_dispatch:
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
+  build-and-deploy:
+    # This will use your self-hosted runner (the one you registered)
+    runs-on: [self-hosted, linux, ec2]
 
     steps:
-      - name: Checkout source
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Build React App
+      - name: Build React app
         run: npm run build
 
-      - name: Add SSH Key
-        uses: webfactory/ssh-agent@v0.8.1
-        with:
-          ssh-private-key: ${{ secrets.EC2_SSH_KEY }}
-
-      - name: Deploy using rsync
-        env:
-          HOST: ${{ secrets.EC2_HOST }}
-          USER: ${{ secrets.EC2_USER }}
-          PORT: ${{ secrets.EC2_SSH_PORT }}
-          TARGET: ${{ secrets.EC2_TARGET_DIR }}
+      - name: Copy build to webroot (needs sudo)
         run: |
-          PORT=${PORT:-22}
-          echo "Copying build folder to EC2..."
+          echo "Copying build to /var/www/html ..."
+          # remove old content then copy new content
+          sudo rm -rf /var/www/html/*
+          sudo rsync -av --delete build/ /var/www/html/
+          # set ownership to www-data (common for nginx on ubuntu)
+          if id www-data >/dev/null 2>&1; then
+            sudo chown -R www-data:www-data /var/www/html
+          fi
+          sudo systemctl restart nginx || true
 
-          # Copy build folder to EC2 user home
-          rsync -avz -e "ssh -o StrictHostKeyChecking=no -p ${PORT}" \
-            build/ ${USER}@${HOST}:/home/${USER}/react-deploy/
-
-          # Move build to webroot
-          ssh -o StrictHostKeyChecking=no -p ${PORT} ${USER}@${HOST} <<EOF
-            sudo rm -rf ${TARGET}/*
-            sudo mkdir -p ${TARGET}
-            sudo cp -r /home/${USER}/react-deploy/* ${TARGET}/
-            sudo systemctl restart nginx || true
-            sudo systemctl restart apache2 || true
-            echo "Deployment successful"
-EOF
+      - name: Done
+        run: echo "Deployment finished on self-hosted runner"
