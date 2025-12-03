@@ -7,11 +7,11 @@ on:
 
 jobs:
   build-and-deploy:
-    # This will use your self-hosted runner (the one you registered)
-    runs-on: [self-hosted, linux, ec2]
+    # Make sure these labels match your self-hosted runner
+    runs-on: 
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -19,23 +19,41 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install dependencies
+      - name: Install project dependencies
         run: npm ci
 
       - name: Build React app
         run: npm run build
 
-      - name: Copy build to webroot (needs sudo)
+      - name: Install Nginx (if not installed)
         run: |
-          echo "Copying build to /var/www/html ..."
-          # remove old content then copy new content
+          echo "Verifying Nginx..."
+          if ! command -v nginx >/dev/null 2>&1; then
+            echo "Nginx not found. Installing..."
+            sudo apt update -y
+            sudo apt install -y nginx
+            sudo systemctl enable nginx
+          else
+            echo "Nginx already installed."
+          fi
+
+      - name: Deploy build to /var/www/html
+        run: |
+          echo "Deploying build to Nginx webroot..."
+          
+          # Clean old files
           sudo rm -rf /var/www/html/*
+
+          # Copy new build
           sudo rsync -av --delete build/ /var/www/html/
-          # set ownership to www-data (common for nginx on ubuntu)
+
+          # Fix permissions (Nginx user = www-data on Ubuntu)
           if id www-data >/dev/null 2>&1; then
             sudo chown -R www-data:www-data /var/www/html
           fi
-          sudo systemctl restart nginx || true
+
+          # Restart Nginx to load new files
+          sudo systemctl restart nginx
 
       - name: Done
-        run: echo "Deployment finished on self-hosted runner"
+        run: echo "Applocation deployed successfully"
