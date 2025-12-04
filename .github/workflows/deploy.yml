@@ -1,4 +1,4 @@
-name: Deploying React App to Nginx (Self-hosted) + Push to Docker Hub
+name: Deploying a React App to Nginx (Self-hosted) + Push to Docker Hub
 
 on:
   push:
