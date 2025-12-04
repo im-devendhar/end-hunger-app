@@ -1,147 +1,155 @@
 
-# ------------------------------------------------------------
-# Workflow: Build & Deploy React App on a Self-Hosted Runner
-# Purpose:
-#   - Build a CRA (Create React App) project
-#   - Debug module import/export mismatches (e.g., default vs named export)
-#   - Clean caches to avoid stale dependencies/artifacts
-#   - Deploy to Nginx webroot (/var/www/html) on the same machine
-# Trigger:
-#   - On push to main
-#   - Manual (workflow_dispatch)
-# ------------------------------------------------------------
-
-name: Self-hosted Deploy React App
+name: Deploy React App to Nginx (Self-hosted)
 
 on:
   push:
-    branches: [ "main" ]     # Run automatically when changes are pushed to main
-  workflow_dispatch:          # Allow manual trigger from the GitHub UI
+    branches: ["main"]
+  workflow_dispatch:
 
 jobs:
   build-and-deploy:
-    runs-on: self-hosted      # Use your self-hosted runner (Ubuntu recommended)
+    runs-on: self-hosted
+
+    # Use PUBLIC_URL to ensure CRA emits asset paths for root (/)
+    # If you later host under a subpath, change PUBLIC_URL accordingly.
+    env:
+      PUBLIC_URL: /
 
     steps:
-      # ------------------------------------------------------
-      # 1) Checkout the repo
-      #    - clean: true ensures a fresh working directory
-      #    - fetch-depth: 0 fetches full history (useful for debugging)
-      # ------------------------------------------------------
-      - name: Checkout source code
+      # 1) Checkout repository
+      - name: Checkout source
         uses: actions/checkout@v4
         with:
           clean: true
           fetch-depth: 0
 
-      # ------------------------------------------------------
-      # 2) Quick debug info
-      #    - Shows commit hash to confirm runner is building latest code
-      #    - Lists src/components to verify Recipient.js exists (case-sensitive)
-      #    - Greps for imports to catch named/default import mismatches
-      # ------------------------------------------------------
-      - name: Debug – commit, environment, and file listing
+      # 2) Show workspace context (useful when using a self-hosted runner)
+      - name: Workspace context
         run: |
-          echo "🔎 Commit hash being built:"
-          git rev-parse HEAD || true
+          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
+          pwd
+          ls -la
+          test -f package.json || (echo "package.json not found in current directory" && exit 1)
 
-          echo "🔎 Node & NPM versions:"
-          node --version || true
-          npm --version || true
-
-          echo "📂 Listing src/components (case-sensitive on Linux):"
-          ls -la src/components || true
-
-          echo "🔎 Search for direct imports from './components/Recipient':"
-          grep -R "from './components/Recipient'" -n src || true
-
-          echo "🔎 Search for any usage of 'RecipientPage' (to catch named imports):"
-          grep -R "RecipientPage" -n src || true
-
-      # ------------------------------------------------------
-      # 3) Setup Node.js runtime
-      # ------------------------------------------------------
-      - name: Setup Node.js (v18)
+      # 3) Setup Node.js (adjust version if your app requires different LTS)
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
+          cache: 'npm'
 
-      # ------------------------------------------------------
-      # 4) Clean workspace to avoid stale builds
-      #    - Remove node_modules and build directory
-      # ------------------------------------------------------
-      - name: Clean workspace (node_modules & build)
+      # 4) Clean old build artifacts
+      - name: Clean build artifacts
         run: |
           rm -rf node_modules
           rm -rf build
 
-      # ------------------------------------------------------
-      # 5) Install dependencies using npm ci
-      #    - npm ci is reproducible and faster for CI environments
-      # ------------------------------------------------------
+      # 5) Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # ------------------------------------------------------
-      # 6) Prepare CRA build environment
-      #    - Update Browserslist DB and caniuse-lite to silence warnings
-      #    - Install Babel plugin sometimes required by CRA + modern deps
-      # ------------------------------------------------------
-      - name: Prepare React build environment (CRA fixes)
-        run: |
-          npm i -D @babel/plugin-proposal-private-property-in-object
-          npx update-browserslist-db@latest
-          npm i -D caniuse-lite@latest
-
-      # ------------------------------------------------------
-      # 7) Build the React app
-      #    - Will fail if there are module import/export issues
-      # ------------------------------------------------------
+      # 6) Build React app (CRA respects PUBLIC_URL)
       - name: Build React app
-        run: npm run build
-
-      # ------------------------------------------------------
-      # 8) Ensure Nginx is installed (self-hosted machine)
-      # ------------------------------------------------------
-      - name: Ensure Nginx is installed
         run: |
-          echo "Checking Nginx installation..."
+          echo "PUBLIC_URL=$PUBLIC_URL"
+          npm run build
+
+      # 7) Inspect build output for assets (helps catch blank-page issues)
+      - name: Inspect build output
+        run: |
+          ls -l build/ || true
+          ls -l build/static/js/ || true
+          ls -l build/static/css/ || true
+          sed -n '1,80p' build/index.html || true
+
+      # 8) Ensure Nginx is installed and running
+      - name: Ensure Nginx installed and running
+        run: |
           if ! command -v nginx >/dev/null 2>&1; then
-            echo "Nginx not found. Installing..."
             sudo apt update -y
             sudo apt install -y nginx
             sudo systemctl enable nginx
-          else
-            echo "Nginx is already installed."
           fi
+          sudo systemctl start nginx
+          sudo systemctl status nginx --no-pager || true
 
-      # ------------------------------------------------------
-      # 9) Deploy build output to Nginx webroot
-      #    - Removes old files
-      #    - Copies new build/
-      #    - Sets ownership to www-data (Nginx user)
-      #    - Restarts Nginx
-      # ------------------------------------------------------
+      # 9) Configure Nginx for React SPA (idempotent)
+      - name: Configure Nginx (React SPA)
+        run: |
+          sudo tee /etc/nginx/sites-available/default >/dev/null <<'NGINX'
+          server {
+              listen 80 default_server;
+              listen [::]:80 default_server;
+
+              root /var/www/html;
+              index index.html;
+
+              # React SPA routing: serve index.html for client-side routes
+              location / {
+                  try_files $uri /index.html;
+              }
+          }
+          NGINX
+
+          sudo ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+          sudo nginx -t
+
+      # 10) Deploy build to Nginx webroot
       - name: Deploy build to /var/www/html
         run: |
-          echo "Deploying React build to Nginx webroot..."
-
           # Remove old files
           sudo rm -rf /var/www/html/*
 
-          # Copy new build files (rsync keeps permissions and is efficient)
+          # Copy contents of build/ into webroot
           sudo rsync -av --delete build/ /var/www/html/
 
-          # Set correct permissions for Nginx user
-          if id www-data >/dev/null 2>&1; then
-            sudo chown -R www-data:www-data /var/www/html
-          fi
+          # Ownership and permissions
+          sudo chown -R www-data:www-data /var/www/html
+          sudo find /var/www/html -type d -exec chmod 755 {} \;
+          sudo find /var/www/html -type f -exec chmod 644 {} \;
 
-          # Restart Nginx to apply changes
+          # Restart Nginx
           sudo systemctl restart nginx
 
-      # ------------------------------------------------------
-      # 10) Completion message
-      # ------------------------------------------------------
+      # 11) Post-deploy verification (probes index and assets, tails logs)
+      - name: Verify deployment
+        run: |
+          echo "Listing /var/www/html:"
+          ls -l /var/www/html/ || true
+
+          echo "Listing /var/www/html/static/js:"
+          ls -l /var/www/html/static/js/ || true
+
+          echo "Listing /var/www/html/static/css:"
+          ls -l /var/www/html/static/css/ || true
+
+          echo "index.html head:"
+          sed -n '1,80p' /var/www/html/index.html || true
+
+          echo "curl index:"
+          curl -I http://localhost || true
+
+          JS1=$(ls /var/www/html/static/js/*.js 2>/dev/null | head -n 1)
+          CSS1=$(ls /var/www/html/static/css/*.css 2>/dev/null | head -n 1)
+
+          if [ -n "$JS1" ]; then
+            echo "Testing JS asset: $JS1"
+            curl -I "http://localhost${JS1#/var/www/html}" || true
+          else
+            echo "No JS assets found in /var/www/html/static/js/"
+          fi
+
+          if [ -n "$CSS1" ]; then
+            echo "Testing CSS asset: $CSS1"
+            curl -I "http://localhost${CSS1#/var/www/html}" || true
+          else
+            echo "No CSS assets found in /var/www/html/static/css/"
+          fi
+
+          echo "Nginx logs (last 50):"
+          sudo tail -n 50 /var/log/nginx/access.log || true
+          sudo tail -n 50 /var/log/nginx/error.log || true
+
+      # 12) Completed
       - name: Deployment complete
-        run: echo "✅ Application deployed successfully!"
+        run: echo "Application deployed successfully."
