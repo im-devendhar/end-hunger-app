@@ -2,8 +2,6 @@
 // src/components/Recipient.js
 
 import { Button, /* TextField, */ Typography } from '@mui/material';
-// CI fails due to ESLint "no-unused-vars" for TextField.
-// Commented out until you actually use MUI <TextField /> components.
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
@@ -62,7 +60,6 @@ const RecipientPage = (props) => {
             className="logout_button"
             variant="outlined"
             color="inherit"
-            // FIX: pass the correct string "recipient" (was "reciepient")
             onClick={() => ViewListFunc('recipient')}
           >
             View List
@@ -95,19 +92,22 @@ const RecipientPage = (props) => {
           placeholder="Area"
           required
         />
-        {/* Tip: phone numbers can include +country codes and leading zeros; consider type="tel" */}
+        {/* Tip: for phone numbers consider type="tel" */}
         <input
           className="input_field_class_donor"
           name="phone_number"
           onChange={handleChange}
-          type="text" /* or type="tel" */
+          type="text" /* or "tel" */
           placeholder="Contact"
           required
         />
 
-        {/* <input className="input_field_class_donor" type="text" placeholder="Request Details" required /> */}
-
-        <Button variant="contained" color="primary" onClick={handleSubmit} disabled={!buttonStatus}>
+        <Button
+          variant="contained"
+          color="primary"
+          onClick={handleSubmit}
+          disabled={!buttonStatus}
+        >
           Submit Request
         </Button>
       </div>
@@ -115,3 +115,5 @@ const RecipientPage = (props) => {
   );
 };
 
+// 👉 Add this line
+export default RecipientPage;
