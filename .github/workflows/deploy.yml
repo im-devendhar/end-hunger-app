@@ -1,44 +1,108 @@
 
+# ------------------------------------------------------------
+# Workflow: Build & Deploy React App on a Self-Hosted Runner
+# Purpose:
+#   - Build a CRA (Create React App) project
+#   - Debug module import/export mismatches (e.g., default vs named export)
+#   - Clean caches to avoid stale dependencies/artifacts
+#   - Deploy to Nginx webroot (/var/www/html) on the same machine
+# Trigger:
+#   - On push to main
+#   - Manual (workflow_dispatch)
+# ------------------------------------------------------------
+
 name: Self-hosted Deploy React App
 
 on:
   push:
-    branches: [ "main" ]   # Trigger on push to main branch
-  workflow_dispatch:        # Allow manual trigger
+    branches: [ "main" ]     # Run automatically when changes are pushed to main
+  workflow_dispatch:          # Allow manual trigger from the GitHub UI
 
 jobs:
   build-and-deploy:
-    runs-on: self-hosted    # Use your self-hosted runner
+    runs-on: self-hosted      # Use your self-hosted runner (Ubuntu recommended)
 
     steps:
-      # 1. Checkout the repository
+      # ------------------------------------------------------
+      # 1) Checkout the repo
+      #    - clean: true ensures a fresh working directory
+      #    - fetch-depth: 0 fetches full history (useful for debugging)
+      # ------------------------------------------------------
       - name: Checkout source code
         uses: actions/checkout@v4
+        with:
+          clean: true
+          fetch-depth: 0
 
-      # 2. Setup Node.js environment
+      # ------------------------------------------------------
+      # 2) Quick debug info
+      #    - Shows commit hash to confirm runner is building latest code
+      #    - Lists src/components to verify Recipient.js exists (case-sensitive)
+      #    - Greps for imports to catch named/default import mismatches
+      # ------------------------------------------------------
+      - name: Debug – commit, environment, and file listing
+        run: |
+          echo "🔎 Commit hash being built:"
+          git rev-parse HEAD || true
+
+          echo "🔎 Node & NPM versions:"
+          node --version || true
+          npm --version || true
+
+          echo "📂 Listing src/components (case-sensitive on Linux):"
+          ls -la src/components || true
+
+          echo "🔎 Search for direct imports from './components/Recipient':"
+          grep -R "from './components/Recipient'" -n src || true
+
+          echo "🔎 Search for any usage of 'RecipientPage' (to catch named imports):"
+          grep -R "RecipientPage" -n src || true
+
+      # ------------------------------------------------------
+      # 3) Setup Node.js runtime
+      # ------------------------------------------------------
       - name: Setup Node.js (v18)
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      # 3. Install project dependencies
+      # ------------------------------------------------------
+      # 4) Clean workspace to avoid stale builds
+      #    - Remove node_modules and build directory
+      # ------------------------------------------------------
+      - name: Clean workspace (node_modules & build)
+        run: |
+          rm -rf node_modules
+          rm -rf build
+
+      # ------------------------------------------------------
+      # 5) Install dependencies using npm ci
+      #    - npm ci is reproducible and faster for CI environments
+      # ------------------------------------------------------
       - name: Install dependencies
         run: npm ci
 
-      # 4. Prepare React build environment
-      #    - Fix CRA build issues (missing Babel plugin)
-      #    - Update Browserslist data to remove warnings
+      # ------------------------------------------------------
+      # 6) Prepare CRA build environment
+      #    - Update Browserslist DB and caniuse-lite to silence warnings
+      #    - Install Babel plugin sometimes required by CRA + modern deps
+      # ------------------------------------------------------
       - name: Prepare React build environment (CRA fixes)
         run: |
           npm i -D @babel/plugin-proposal-private-property-in-object
           npx update-browserslist-db@latest
           npm i -D caniuse-lite@latest
 
-      # 5. Build React app for production
+      # ------------------------------------------------------
+      # 7) Build the React app
+      #    - Will fail if there are module import/export issues
+      # ------------------------------------------------------
       - name: Build React app
         run: npm run build
 
-      # 6. Install Nginx if not already installed
+      # ------------------------------------------------------
+      # 8) Ensure Nginx is installed (self-hosted machine)
+      # ------------------------------------------------------
       - name: Ensure Nginx is installed
         run: |
           echo "Checking Nginx installation..."
@@ -51,18 +115,24 @@ jobs:
             echo "Nginx is already installed."
           fi
 
-      # 7. Deploy build files to Nginx webroot
+      # ------------------------------------------------------
+      # 9) Deploy build output to Nginx webroot
+      #    - Removes old files
+      #    - Copies new build/
+      #    - Sets ownership to www-data (Nginx user)
+      #    - Restarts Nginx
+      # ------------------------------------------------------
       - name: Deploy build to /var/www/html
         run: |
           echo "Deploying React build to Nginx webroot..."
-          
+
           # Remove old files
           sudo rm -rf /var/www/html/*
 
-          # Copy new build files
+          # Copy new build files (rsync keeps permissions and is efficient)
           sudo rsync -av --delete build/ /var/www/html/
 
-          # Set correct permissions for Nginx user (www-data)
+          # Set correct permissions for Nginx user
           if id www-data >/dev/null 2>&1; then
             sudo chown -R www-data:www-data /var/www/html
           fi
@@ -70,6 +140,8 @@ jobs:
           # Restart Nginx to apply changes
           sudo systemctl restart nginx
 
-      # 8. Completion message
+      # ------------------------------------------------------
+      # 10) Completion message
+      # ------------------------------------------------------
       - name: Deployment complete
         run: echo "✅ Application deployed successfully!"
