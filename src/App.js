@@ -25,25 +25,24 @@ function App() {
 
   /**
    * Handles click to fetch food list.
-   * NOTE:
-   * - ESLint/CI were failing due to unused vars/imports elsewhere; those are commented above.
-   * - If FoodTable expects the payload, prefer setJson(response.data) over setJson(response).
+   * Alignment:
+   * - Pass only the payload to FoodTable via setJson(response.data).
+   * - Track who triggered the query to drive isRecipient accurately.
    */
-  const foodListClickHandler = async (user) => {
-    const userBool = user === 'donor' ? false : true; // donor => not requesting food
+  const foodListClickHandler = async (userType) => {
+    const userBool = userType === 'donor' ? false : true; // donor => not requesting food
     const rawData = { donate_food: userBool };
 
     try {
       const response = await axios.post('http://127.0.0.1:5000/get_food_list', rawData);
-      // If FoodTable expects the actual data payload, use response.data:
-      // setJson(response.data);
-      setJson(response);
+      // Send only the data payload to components
+      setJson(response.data);
     } catch (error) {
       console.error('Food list creation error: ', error);
       alert('Error submitting food donation.');
     }
 
-    setuser(user);
+    setuser(userType);
   };
 
   return (
@@ -68,9 +67,8 @@ function App() {
           element={
             <FoodTable
               foodList={json}
-              // This currently returns true when user === 'donor'.
-              // If isRecipient should be true only for recipients, consider: user === 'recipient'
-              isRecipient={user === 'donor' ? true : false}
+              // True only for recipients; false for donors
+              isRecipient={user === 'recipient'}
             />
           }
         />
@@ -79,3 +77,4 @@ function App() {
   );
 }
 
+export default App;
