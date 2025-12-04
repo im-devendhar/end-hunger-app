@@ -11,138 +11,115 @@ jobs:
 
     env:
       PUBLIC_URL: /
-      IMAGE_NAME: devenops641/endhunger    # change to your Docker Hub repo/name
+      IMAGE_NAME: devenops641/endhunger
       LATEST_TAG: latest
 
     steps:
+      # ---------- 1. Checkout ----------
       - name: Checkout source
         uses: actions/checkout@v4
-        with:
-          clean: true
-          fetch-depth: 0
 
+      # ---------- 2. Debug workspace ----------
       - name: Workspace context
         run: |
-          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
-          pwd
           ls -la
-          test -f package.json || (echo "package.json not found" && exit 1)
-          test -f Dockerfile || echo "Warning: Dockerfile not found at repo root (we'll still try to build if located elsewhere)"
+          test -f Dockerfile || echo "⚠️ Dockerfile not found in repo root"
 
+      # ---------- 3. Setup Node ----------
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
 
+      # ---------- 4. Get semantic version ----------
       - name: Read package version
         id: pkg
         run: |
-          VER=$(node -p "require('./package.json').version" 2>/dev/null || echo "")
-          echo "ver=$VER" >> $GITHUB_OUTPUT
+          echo "ver=$(jq -r '.version' package.json)" >> $GITHUB_OUTPUT
 
+      # ---------- 5. Clean workspace ----------
       - name: Clean build artifacts
-        run: |
-          rm -rf node_modules build || true
+        run: rm -rf node_modules build || true
 
+      # ---------- 6. Install deps ----------
       - name: Install dependencies
         run: npm ci
 
+      # ---------- 7. Build React App ----------
       - name: Build React app
-        run: |
-          echo "PUBLIC_URL=$PUBLIC_URL"
-          npm run build
+        run: npm run build
 
-      - name: Inspect build output
-        run: |
-          ls -l build/ || true
-          ls -l build/static/js/ || true
-          ls -l build/static/css/ || true
-          sed -n '1,80p' build/index.html || true
-
-      # --- Optional: ensure Docker is installed on the self-hosted runner ---
-      - name: Ensure Docker (self-hosted) is installed
+      # ---------- 8. Install Docker (Self-hosted EC2) ----------
+      - name: Install Docker Engine
         run: |
           if ! command -v docker >/dev/null 2>&1; then
-            echo "Docker not found — installing Docker (requires sudo)"
-            # simple install for Debian/Ubuntu runners; adapt if your self-hosted runner OS differs
+            echo "⚙️ Installing Docker..."
             sudo apt update -y
             sudo apt install -y ca-certificates curl gnupg lsb-release
-            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+            sudo mkdir -p /etc/apt/keyrings
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
             echo \
-              "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
-              $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+              https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | \
+              sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
             sudo apt update -y
             sudo apt install -y docker-ce docker-ce-cli containerd.io
             sudo usermod -aG docker $USER || true
-            # Note: may need to re-login for group changes to take effect; usually runner restarts between jobs
           else
-            echo "Docker is already installed"
+            echo "Docker already installed ✔"
           fi
-        # continue on failure to avoid blocking if install is not permitted
-        continue-on-error: true
 
-      # ------------- Build Docker image (locally) ----------------
+      # ---------- 9. Build Docker Image ----------
       - name: Build Docker image
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          LATEST_TAG: ${{ env.LATEST_TAG }}
         run: |
-          set -e
           SHORT_SHA="${GITHUB_SHA::7}"
-          # If Dockerfile isn't at repo root but in ./docker/Dockerfile, set DOCKERFILE_PATH accordingly
-          DOCKERFILE_PATH="./Dockerfile"
-          echo "Using Dockerfile: $DOCKERFILE_PATH"
-          echo "Building ${IMAGE_NAME}:${SHORT_SHA} and ${IMAGE_NAME}:${LATEST_TAG}"
-          docker build --build-arg PUBLIC_URL="${PUBLIC_URL}" -f "$DOCKERFILE_PATH" -t "${IMAGE_NAME}:${SHORT_SHA}" -t "${IMAGE_NAME}:${LATEST_TAG}" .
+          echo "Building image: ${IMAGE_NAME}:${SHORT_SHA}"
 
-      # ------------- Login & Push to Docker Hub ----------------
+          docker build \
+            --build-arg PUBLIC_URL=$PUBLIC_URL \
+            -t "${IMAGE_NAME}:${SHORT_SHA}" \
+            -t "${IMAGE_NAME}:${LATEST_TAG}" \
+            .
+
+      # ---------- 10. Login to Docker Hub ----------
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # ---------- 11. Push Docker Image ----------
       - name: Push tags to Docker Hub
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
-          LATEST_TAG: ${{ env.LATEST_TAG }}
         run: |
-          set -e
           SHORT_SHA="${GITHUB_SHA::7}"
           docker push "${IMAGE_NAME}:${SHORT_SHA}"
           docker push "${IMAGE_NAME}:${LATEST_TAG}"
 
-      - name: Tag & push semantic version (if present)
+      # ---------- 12. Push Semantic Version Tag ----------
+      - name: Push semantic version image
         if: ${{ steps.pkg.outputs.ver != '' }}
-        env:
-          IMAGE_NAME: ${{ env.IMAGE_NAME }}
         run: |
           VER="${{ steps.pkg.outputs.ver }}"
-          echo "Tagging and pushing semantic version: ${IMAGE_NAME}:${VER}"
-          docker tag "${IMAGE_NAME}:${{ github.sha::7 }}" "${IMAGE_NAME}:${VER}" || docker tag "${IMAGE_NAME}:${LATEST_TAG}" "${IMAGE_NAME}:${VER}"
-          docker push "${IMAGE_NAME}:${VER}" || true
+          docker tag "${IMAGE_NAME}:${LATEST_TAG}" "${IMAGE_NAME}:${VER}"
+          docker push "${IMAGE_NAME}:${VER}"
 
-      - name: Verify image available in Docker Hub (pull latest)
-        run: |
-          docker pull "${IMAGE_NAME}:${LATEST_TAG}"
-          docker images | grep "${IMAGE_NAME}" || true
+      # ---------- 13. Verify image in Docker Hub ----------
+      - name: Verify image
+        run: docker pull "${IMAGE_NAME}:${LATEST_TAG}"
 
-      # ------------- (Optional) continue with existing Nginx deploy to EC2 ----------------
-      - name: Deploy build to /var/www/html (existing flow)
+      # ---------- 14. Deploy React build to Nginx ----------
+      - name: Deploy build to /var/www/html
         run: |
           sudo rm -rf /var/www/html/*
           sudo rsync -av --delete build/ /var/www/html/
           sudo chown -R www-data:www-data /var/www/html
-          sudo find /var/www/html -type d -exec chmod 755 {} \;
-          sudo find /var/www/html -type f -exec chmod 644 {} \;
           sudo systemctl restart nginx
 
-      - name: Verify deployment (existing checks)
-        run: |
-          echo "Listing /var/www/html:"
-          ls -l /var/www/html/ || true
-          curl -I http://localhost || true
+      # ---------- 15. Basic health check ----------
+      - name: Verify deployment
+        run: curl -I http://localhost || true
 
       - name: Deployment complete
-        run: echo "Application deployed successfully and Docker image pushed to Docker Hub."
+        run: echo "✔ Deployment complete & Docker image pushed!"
