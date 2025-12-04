@@ -1,5 +1,4 @@
-
-name: Deploying React App to Nginx (Self-hosted)
+name: Deploying React App to Nginx (Self-hosted) + Push to Docker Hub
 
 on:
   push:
@@ -10,50 +9,50 @@ jobs:
   build-and-deploy:
     runs-on: self-hosted
 
-    
     env:
       PUBLIC_URL: /
+      IMAGE_NAME: devenops641/endhunger    # change to your Docker Hub repo/name
+      LATEST_TAG: latest
 
     steps:
-      # 1) Checkout repository
       - name: Checkout source
         uses: actions/checkout@v4
         with:
           clean: true
           fetch-depth: 0
 
-      # 2) Show workspace context (useful when using a self-hosted runner)
       - name: Workspace context
         run: |
           echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
           pwd
           ls -la
-          test -f package.json || (echo "package.json not found in current directory" && exit 1)
+          test -f package.json || (echo "package.json not found" && exit 1)
+          test -f Dockerfile || echo "Warning: Dockerfile not found at repo root (we'll still try to build if located elsewhere)"
 
-      # 3) Setup Node.js (adjust version if your app requires different LTS)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '18'
           cache: 'npm'
 
-      # 4) Clean old build artifacts
+      - name: Read package version
+        id: pkg
+        run: |
+          VER=$(node -p "require('./package.json').version" 2>/dev/null || echo "")
+          echo "ver=$VER" >> $GITHUB_OUTPUT
+
       - name: Clean build artifacts
         run: |
-          rm -rf node_modules
-          rm -rf build
+          rm -rf node_modules build || true
 
-      # 5) Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      # 6) Build React app (CRA respects PUBLIC_URL)
       - name: Build React app
         run: |
           echo "PUBLIC_URL=$PUBLIC_URL"
           npm run build
 
-      # 7) Inspect build output for assets (helps catch blank-page issues)
       - name: Inspect build output
         run: |
           ls -l build/ || true
@@ -61,94 +60,89 @@ jobs:
           ls -l build/static/css/ || true
           sed -n '1,80p' build/index.html || true
 
-      # 8) Ensure Nginx is installed and running
-      - name: Ensure Nginx installed and running
+      # --- Optional: ensure Docker is installed on the self-hosted runner ---
+      - name: Ensure Docker (self-hosted) is installed
         run: |
-          if ! command -v nginx >/dev/null 2>&1; then
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "Docker not found — installing Docker (requires sudo)"
+            # simple install for Debian/Ubuntu runners; adapt if your self-hosted runner OS differs
             sudo apt update -y
-            sudo apt install -y nginx
-            sudo systemctl enable nginx
+            sudo apt install -y ca-certificates curl gnupg lsb-release
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+              $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            sudo apt update -y
+            sudo apt install -y docker-ce docker-ce-cli containerd.io
+            sudo usermod -aG docker $USER || true
+            # Note: may need to re-login for group changes to take effect; usually runner restarts between jobs
+          else
+            echo "Docker is already installed"
           fi
-          sudo systemctl start nginx
-          sudo systemctl status nginx --no-pager || true
+        # continue on failure to avoid blocking if install is not permitted
+        continue-on-error: true
 
-      # 9) Configure Nginx for React SPA (idempotent)
-      - name: Configure Nginx (React SPA)
+      # ------------- Build Docker image (locally) ----------------
+      - name: Build Docker image
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          LATEST_TAG: ${{ env.LATEST_TAG }}
         run: |
-          sudo tee /etc/nginx/sites-available/default >/dev/null <<'NGINX'
-          server {
-              listen 80 default_server;
-              listen [::]:80 default_server;
+          set -e
+          SHORT_SHA="${GITHUB_SHA::7}"
+          # If Dockerfile isn't at repo root but in ./docker/Dockerfile, set DOCKERFILE_PATH accordingly
+          DOCKERFILE_PATH="./Dockerfile"
+          echo "Using Dockerfile: $DOCKERFILE_PATH"
+          echo "Building ${IMAGE_NAME}:${SHORT_SHA} and ${IMAGE_NAME}:${LATEST_TAG}"
+          docker build --build-arg PUBLIC_URL="${PUBLIC_URL}" -f "$DOCKERFILE_PATH" -t "${IMAGE_NAME}:${SHORT_SHA}" -t "${IMAGE_NAME}:${LATEST_TAG}" .
 
-              root /var/www/html;
-              index index.html;
+      # ------------- Login & Push to Docker Hub ----------------
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-              # React SPA routing: serve index.html for client-side routes
-              location / {
-                  try_files $uri /index.html;
-              }
-          }
-          NGINX
-
-          sudo ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
-          sudo nginx -t
-
-      # 10) Deploy build to Nginx webroot
-      - name: Deploy build to /var/www/html
+      - name: Push tags to Docker Hub
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          LATEST_TAG: ${{ env.LATEST_TAG }}
         run: |
-          # Remove old files
+          set -e
+          SHORT_SHA="${GITHUB_SHA::7}"
+          docker push "${IMAGE_NAME}:${SHORT_SHA}"
+          docker push "${IMAGE_NAME}:${LATEST_TAG}"
+
+      - name: Tag & push semantic version (if present)
+        if: ${{ steps.pkg.outputs.ver != '' }}
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          VER="${{ steps.pkg.outputs.ver }}"
+          echo "Tagging and pushing semantic version: ${IMAGE_NAME}:${VER}"
+          docker tag "${IMAGE_NAME}:${{ github.sha::7 }}" "${IMAGE_NAME}:${VER}" || docker tag "${IMAGE_NAME}:${LATEST_TAG}" "${IMAGE_NAME}:${VER}"
+          docker push "${IMAGE_NAME}:${VER}" || true
+
+      - name: Verify image available in Docker Hub (pull latest)
+        run: |
+          docker pull "${IMAGE_NAME}:${LATEST_TAG}"
+          docker images | grep "${IMAGE_NAME}" || true
+
+      # ------------- (Optional) continue with existing Nginx deploy to EC2 ----------------
+      - name: Deploy build to /var/www/html (existing flow)
+        run: |
           sudo rm -rf /var/www/html/*
-
-          # Copy contents of build/ into webroot
           sudo rsync -av --delete build/ /var/www/html/
-
-          # Ownership and permissions
           sudo chown -R www-data:www-data /var/www/html
           sudo find /var/www/html -type d -exec chmod 755 {} \;
           sudo find /var/www/html -type f -exec chmod 644 {} \;
-
-          # Restart Nginx
           sudo systemctl restart nginx
 
-      # 11) Post-deploy verification (probes index and assets, tails logs)
-      - name: Verify deployment
+      - name: Verify deployment (existing checks)
         run: |
           echo "Listing /var/www/html:"
           ls -l /var/www/html/ || true
-
-          echo "Listing /var/www/html/static/js:"
-          ls -l /var/www/html/static/js/ || true
-
-          echo "Listing /var/www/html/static/css:"
-          ls -l /var/www/html/static/css/ || true
-
-          echo "index.html head:"
-          sed -n '1,80p' /var/www/html/index.html || true
-
-          echo "curl index:"
           curl -I http://localhost || true
 
-          JS1=$(ls /var/www/html/static/js/*.js 2>/dev/null | head -n 1)
-          CSS1=$(ls /var/www/html/static/css/*.css 2>/dev/null | head -n 1)
-
-          if [ -n "$JS1" ]; then
-            echo "Testing JS asset: $JS1"
-            curl -I "http://localhost${JS1#/var/www/html}" || true
-          else
-            echo "No JS assets found in /var/www/html/static/js/"
-          fi
-
-          if [ -n "$CSS1" ]; then
-            echo "Testing CSS asset: $CSS1"
-            curl -I "http://localhost${CSS1#/var/www/html}" || true
-          else
-            echo "No CSS assets found in /var/www/html/static/css/"
-          fi
-
-          echo "Nginx logs (last 50):"
-          sudo tail -n 50 /var/log/nginx/access.log || true
-          sudo tail -n 50 /var/log/nginx/error.log || true
-
-      # 12) Completed
       - name: Deployment complete
-        run: echo "Application deployed successfully."
+        run: echo "Application deployed successfully and Docker image pushed to Docker Hub."
