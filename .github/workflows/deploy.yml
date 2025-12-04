@@ -10,8 +10,7 @@ jobs:
   build-and-deploy:
     runs-on: self-hosted
 
-    # Use PUBLIC_URL to ensure CRA emits asset paths for root (/)
-    # If you later host under a subpath, change PUBLIC_URL accordingly.
+    
     env:
       PUBLIC_URL: /
 
