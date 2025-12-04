@@ -1,59 +1,75 @@
+
 name: Self-hosted Deploy React App
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [ "main" ]   # Trigger on push to main branch
+  workflow_dispatch:        # Allow manual trigger
 
 jobs:
   build-and-deploy:
-   
-    runs-on: self-hosted
+    runs-on: self-hosted    # Use your self-hosted runner
 
     steps:
-      - name: Checkout repository
+      # 1. Checkout the repository
+      - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      # 2. Setup Node.js environment
+      - name: Setup Node.js (v18)
         uses: actions/setup-node@v4
         with:
           node-version: '18'
 
-      - name: Install project dependencies
+      # 3. Install project dependencies
+      - name: Install dependencies
         run: npm ci
 
+      # 4. Prepare React build environment
+      #    - Fix CRA build issues (missing Babel plugin)
+      #    - Update Browserslist data to remove warnings
+      - name: Prepare React build environment (CRA fixes)
+        run: |
+          npm i -D @babel/plugin-proposal-private-property-in-object
+          npx update-browserslist-db@latest
+          npm i -D caniuse-lite@latest
+
+      # 5. Build React app for production
       - name: Build React app
         run: npm run build
 
-      - name: Install Nginx (if not installed)
+      # 6. Install Nginx if not already installed
+      - name: Ensure Nginx is installed
         run: |
-          echo "Verifying Nginx..."
+          echo "Checking Nginx installation..."
           if ! command -v nginx >/dev/null 2>&1; then
             echo "Nginx not found. Installing..."
             sudo apt update -y
             sudo apt install -y nginx
             sudo systemctl enable nginx
           else
-            echo "Nginx already installed."
+            echo "Nginx is already installed."
           fi
 
+      # 7. Deploy build files to Nginx webroot
       - name: Deploy build to /var/www/html
         run: |
-          echo "Deploying build to Nginx webroot..."
+          echo "Deploying React build to Nginx webroot..."
           
-          # Clean old files
+          # Remove old files
           sudo rm -rf /var/www/html/*
 
-          # Copy new build
+          # Copy new build files
           sudo rsync -av --delete build/ /var/www/html/
 
-          # Fix permissions (Nginx user = www-data on Ubuntu)
+          # Set correct permissions for Nginx user (www-data)
           if id www-data >/dev/null 2>&1; then
             sudo chown -R www-data:www-data /var/www/html
           fi
 
-          # Restart Nginx to load new files
+          # Restart Nginx to apply changes
           sudo systemctl restart nginx
 
-      - name: Done
-        run: echo "Application deployed successfully"
+      # 8. Completion message
+      - name: Deployment complete
+        run: echo "✅ Application deployed successfully!"
